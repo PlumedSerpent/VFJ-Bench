@@ -12,8 +12,12 @@ from tqdm import tqdm
 
 from openai import OpenAI
 
-MODEL_QWEN2 ="qwen2.5-vl-72b-instruct"# "openai/gpt-4o-2024-11-20"
-MODEL_QWEN2 = "gpt-4o-2024-11-20"
+MODEL_QWEN2 ="qwen2.5-vl-72b-instruct"
+
+def build_client_aliyun() -> OpenAI:
+    """Build OpenAI client (using Aliyun for Qwen2)"""
+    api_key = "YOUR_API_KEY_HERE"
+    return OpenAI(api_key=api_key, base_url="https://dashscope.aliyuncs.com/compatible-mode/v1")
 
 CAPTION_PROMPT = "Generate a detailed caption for this image."
 
@@ -24,10 +28,6 @@ SYSTEM_PROMPT = (
     "Do not list multiple options or include meta commentary."
 )
 
-def build_client_aliyun() -> OpenAI:
-    """Build OpenAI client (using Aliyun for Qwen2)"""
-    api_key = "YOUR_API_KEY_HERE"
-    return OpenAI(api_key=api_key, base_url="https://api.bltcy.ai/v1")
 
 def encode_image_to_base64(image_path: Path) -> str:
     """Encode image to base64"""
