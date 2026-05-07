@@ -1,3 +1,5 @@
+#!/usr/bin/env python3
+
 
 import os
 import json
@@ -18,6 +20,7 @@ from urllib3.util import Timeout as Urllib3Timeout
 _dashscope_pace_lock = threading.Lock()
 _last_dashscope_monotonic: float = 0.0
 
+
 def _is_dashscope_throttling(code: Optional[str], message: Optional[str]) -> bool:
     c = (code or "").lower()
     m = (message or "").lower()
@@ -27,8 +30,9 @@ def _is_dashscope_throttling(code: Optional[str], message: Optional[str]) -> boo
         return True
     return False
 
+
 def _pace_dashscope_calls(min_interval_sec: float) -> None:
-    """多线程下限制全局 DashScope 调用最小间隔，减轻 RateQuota。"""
+    """Limit the minimum interval for global DashScope calls under multi-threading to reduce RateQuota."""
     global _last_dashscope_monotonic
     if min_interval_sec <= 0:
         return
@@ -39,99 +43,20 @@ def _pace_dashscope_calls(min_interval_sec: float) -> None:
             time.sleep(wait)
         _last_dashscope_monotonic = time.monotonic()
 
+
 def _sleep_rate_limit_backoff(attempt: int, base_wait_sec: float) -> None:
     cap = 120.0
     wait = min(cap, base_wait_sec * (2**attempt) + random.uniform(0, 3))
     print(f"  [Rate limit] 等待 {wait:.1f}s 后重试 (第 {attempt + 1} 次)...")
     time.sleep(wait)
 
-def parse_wavespeed_api_keys(arg_value: Optional[str] = None) -> List[str]:
-    """从命令行或环境变量解析 WaveSpeed API keys（支持逗号分隔多个 key 做轮换）。"""
-    raw = (arg_value or "").strip() or (os.getenv("WAVESPEED_API_KEYS") or "").strip()
-    if raw:
-        return [k.strip() for k in raw.split(",") if k.strip()]
-    single = (os.getenv("WAVESPEED_API_KEY") or "").strip()
-    return [single] if single else []
 
-def _is_wavespeed_rate_limit(http_status: Optional[int], message: str) -> bool:
-    m = (message or "").lower()
-    if http_status == 429:
-        return True
-    if "429" in m and ("rate" in m or "limit" in m or "too many" in m):
-        return True
-    if "rate limit" in m or "too many requests" in m:
-        return True
-    return False
 
-_WAVESPEED_SUBMIT_URL = "https://api.wavespeed.ai/api/v3/wavespeed-ai/qwen-image/edit-plus"
 
-def _call_wavespeed_edit_plus(api_key: str, image_url: str, prompt: str) -> str:
-    """调用 WaveSpeed Qwen-Image-Edit-Plus；提交后轮询直至完成。遇 429 抛出便于轮换 key。"""
-    headers = {"Authorization": f"Bearer {api_key}", "Content-Type": "application/json"}
-    payload = {
-        "enable_base64_output": False,
-        "enable_sync_mode": False,
-        "images": [image_url],
-        "output_format": "jpeg",
-        "prompt": prompt,
-        "seed": -1,
-    }
-    r = requests.post(
-        _WAVESPEED_SUBMIT_URL,
-        headers=headers,
-        json=payload,
-        timeout=Urllib3Timeout(connect=30, read=120, total=180),
-    )
-    try:
-        resp_json = r.json()
-    except Exception:
-        resp_json = {}
 
-    code = resp_json.get("code")
-    msg = str(resp_json.get("message") or r.text or "")
-    if r.status_code == 429 or code == 429 or _is_wavespeed_rate_limit(r.status_code, msg):
-        raise Exception(f"WaveSpeed rate limited [HTTP {r.status_code}] [{code}]: {msg}")
-    if code != 200:
-        raise Exception(f"WaveSpeed submit error [HTTP {r.status_code}] [{code}]: {msg}")
-
-    data = resp_json.get("data") or {}
-    if data.get("status") == "completed" and data.get("outputs"):
-        print("  [WaveSpeed] 图生完成（同步返回）")
-        return data["outputs"][0]
-
-    task_id = data.get("id")
-    poll_url = (data.get("urls") or {}).get("get") if isinstance(data.get("urls"), dict) else None
-    if not poll_url and task_id:
-        poll_url = f"https://api.wavespeed.ai/api/v3/predictions/{task_id}"
-    if not poll_url:
-        raise Exception(f"WaveSpeed: missing task id / poll URL: {resp_json}")
-
-    deadline = time.monotonic() + 600.0
-    while time.monotonic() < deadline:
-        pr = requests.get(
-            poll_url,
-            headers={"Authorization": f"Bearer {api_key}"},
-            timeout=Urllib3Timeout(connect=30, read=60, total=90),
-        )
-        try:
-            pj = pr.json()
-        except Exception:
-            pj = {}
-        if pr.status_code == 429 or pj.get("code") == 429:
-            raise Exception(f"WaveSpeed poll rate limited [HTTP {pr.status_code}]")
-        pdata = pj.get("data") or {}
-        status = pdata.get("status")
-        if status == "completed":
-            outs = pdata.get("outputs") or []
-            if outs:
-                print("  [WaveSpeed] 图生完成（轮询）")
-                return outs[0]
-            raise Exception(f"WaveSpeed completed but no outputs: {pj}")
-        if status == "failed":
-            raise Exception(f"WaveSpeed task failed: {pdata.get('error', pj)}")
-        time.sleep(2.0)
-
-    raise Exception("WaveSpeed: polling timeout")
+# ==============================================================================
+# 基础工具函数
+# ==============================================================================
 
 def load_subset_data(subset_path: str) -> List[Dict]:
     with open(subset_path, 'r', encoding='utf-8') as f:
@@ -139,7 +64,7 @@ def load_subset_data(subset_path: str) -> List[Dict]:
     return data
 
 def dedupe_records_by_img(data: List[Dict]) -> Tuple[List[Dict], int]:
-    """同一 img 多条记录时仅保留第一条，便于与输出目录一对一统计、避免本轮重复跑同图。"""
+    """Keep only the first record when there are multiple records for the same img, to facilitate one-to-one statistics with the output directory and avoid re-running the same image in this round."""
     seen = set()
     out: List[Dict] = []
     for item in data:
@@ -152,8 +77,9 @@ def dedupe_records_by_img(data: List[Dict]) -> Tuple[List[Dict], int]:
         out.append(item)
     return out, len(data) - len(out)
 
+
 def is_sample_fully_processed(output_dir: str, img_filename: str, edit_intensities: List[int]) -> bool:
-    """若 Step 1..max(intensities) 下 `{{base}}_edit_{{step}}.jpg` 与 `{{base}}_del_{{step}}.jpg` 均存在，视为该样本已全部跑完。"""
+    """If `{{base}}_edit_{{step}}.jpg` and `{{base}}_del_{{step}}.jpg` exist for Step 1..max(intensities), the sample is considered fully processed."""
     if not edit_intensities:
         return False
     base_name = os.path.splitext(img_filename)[0]
@@ -165,12 +91,18 @@ def is_sample_fully_processed(output_dir: str, img_filename: str, edit_intensiti
             return False
     return True
 
+
 def select_random_incomplete_samples(
     data: List[Dict],
     output_dir: str,
     edit_intensities: List[int],
     num_samples: int,
 ) -> Tuple[List[Dict], int]:
+    """
+    Randomly draw up to num_samples incomplete samples without replacement (fully completed samples do not count towards num_samples).
+    Assume `data` is deduplicated by img: statistics and quotas are counted by unique images.
+    Returns (selected list, number of fully completed images in the candidate pool).
+    """
     if num_samples <= 0 or not data:
         return [], sum(
             1
@@ -193,11 +125,13 @@ def select_random_incomplete_samples(
         selected.append(item)
     return selected, ready_count
 
+
 def init_llm_client(api_key: Optional[str] = None) -> OpenAI:
     api_key = api_key or os.getenv("DASHSCOPE_API_KEY")
     if not api_key:
         raise ValueError("请提供 API Key (通过参数或 DASHSCOPE_API_KEY 环境变量)")
     
+    # 使用阿里云 DashScope 兼容 OpenAI 接口
     client = OpenAI(
         api_key=api_key,
         base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
@@ -246,7 +180,15 @@ def download_image(image_url: str, save_path: str):
     except Exception as e:
         raise Exception(f"Failed to download image: {e}")
 
+# ==============================================================================
+# 核心功能 1: 细节提取与约束检查 (Constraint Check)
+# ==============================================================================
+
 def check_progressive_constraint(client: OpenAI, candidate_detail: str, previous_details: List[str], model: str = "deepseek-v3.2") -> bool:
+    """
+    Check if the candidate detail violates the progressive editing constraint.
+    Constraint: Subsequent edited details cannot be a "part" or "subset" of previously edited details.
+    """
     if not previous_details:
         return True
         
@@ -265,6 +207,34 @@ Candidate detail to process next:
 
 Question: Is the candidate detail a physical part or subset of any of the previously processed details?
 Answer strictly with YES or NO.
+"""
+    try:
+        response = call_llm(client, prompt, model=model).strip().lower()
+        if "yes" in response:
+            return False
+        return True
+    except Exception as e:
+        print(f"  [Warning] Constraint check failed: {e}. Assuming safe.")
+        return True
+
+def extract_modifiable_details_with_llm(client: OpenAI, caption: str) -> List[Dict]:
+    """Extract modifiable details"""
+    prompt = f"""
+You are an expert annotator. Analyze the image caption and extract specific, modifiable visual elements.
+
+Input Caption: {caption}
+
+Task: Extract 8-12 distinct details. For each, provide:
+- `text`: The exact phrase from the caption.
+- `importance`: 1-10 based on visual saliency (10=core subject, 1=background).
+
+Output strictly JSON:
+{{
+  "details": [
+    {{ "text": "phrase", "importance": 8 }}
+  ]
+}}
+"""
     try:
         response = call_llm(client, prompt)
         json_match = re.search(r'\{[\s\S]*\}', response, re.DOTALL)
@@ -275,6 +245,7 @@ Answer strictly with YES or NO.
             for d in details:
                 text = d.get("text", "").strip()
                 if text:
+                    # 简单验证文本是否存在于 caption 中（忽略大小写和标点）
                     clean_text = re.sub(r'[^\w\s]', '', text).lower()
                     clean_caption = re.sub(r'[^\w\s]', '', caption).lower()
                     if clean_text in clean_caption:
@@ -285,10 +256,13 @@ Answer strictly with YES or NO.
     return []
 
 def filter_details_for_progression(client: OpenAI, details: List[Dict], max_needed: int) -> List[Dict]:
-    """筛选细节列表，确保满足渐进式约束"""
+    """Filter the details list to ensure it meets progressive constraints"""
     if not details:
         return []
         
+    # 按重要性排序（优先处理不重要的细节，逐渐逼近核心？或者反过来？）
+    # 原脚本策略：优先修改不重要的细节 (low importance first)。
+    # 这样可以在不破坏画面主体的情况下先改背景/小物体。
     sorted_details = sorted(details, key=lambda x: x.get("importance", 5))
     
     selected_details = []
@@ -308,8 +282,12 @@ def filter_details_for_progression(client: OpenAI, details: List[Dict], max_need
             
     return selected_details
 
+# ==============================================================================
+# 核心功能 2: VLM 验证 (Verification)
+# ==============================================================================
+
 def _vlm_assistant_text_from_multimodal_response(response: Any) -> str:
-    """从 MultiModalConversation 非流式返回中拼出助手正文。"""
+    """Extract assistant text from non-streaming MultiModalConversation response."""
     output = getattr(response, "output", None) if response is not None else None
     if output is None and isinstance(response, dict):
         output = response.get("output")
@@ -332,6 +310,7 @@ def _vlm_assistant_text_from_multimodal_response(response: Any) -> str:
             parts.append(block)
     return "".join(parts)
 
+
 def verify_edit_with_vlm(
     api_key: str,
     original_img_path: str,
@@ -343,7 +322,7 @@ def verify_edit_with_vlm(
     rate_limit_base_wait: float = 8.0,
     min_api_interval_sec: float = 0.0,
 ) -> Tuple[bool, str]:
-    """使用百炼 MultiModalConversation（qwen3-vl-plus，非流带思考）验证编辑/删除是否成功"""
+    """Verify if the edit/deletion was successful using Bailian MultiModalConversation (qwen3-vl-plus, non-streaming with thinking)"""
     try:
         img1_url = upload_image_to_url(original_img_path)
         img2_url = upload_image_to_url(edited_img_path)
@@ -363,18 +342,96 @@ Output strictly in JSON:
   "pass": true/false,
   "reason": "short explanation"
 }}
+"""
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"image": img1_url},
+                    {"image": img2_url},
+                    {"text": prompt_text},
+                ],
+            }
+        ]
+
+        response = None
+        for attempt in range(rate_limit_retries + 1):
+            _pace_dashscope_calls(min_api_interval_sec)
+            response = MultiModalConversation.call(
+                api_key=api_key,
+                model=model,
+                messages=messages,
+                result_format="message",
+                stream=False,
+                enable_thinking=True,
+                thinking_budget=thinking_budget,
+            )
+            status = getattr(response, "status_code", None)
+            if status is None and isinstance(response, dict):
+                status = response.get("status_code")
+            err = getattr(response, "message", None) or (
+                response.get("message") if isinstance(response, dict) else None
+            )
+            rcode = getattr(response, "code", None)
+            if rcode is None and isinstance(response, dict):
+                rcode = response.get("code")
+            if status == 200:
+                break
+            if _is_dashscope_throttling(str(rcode) if rcode else None, err) and attempt < rate_limit_retries:
+                _sleep_rate_limit_backoff(attempt, rate_limit_base_wait)
+                continue
+            return False, err or f"VLM HTTP status {status}"
+
+        if response is None:
+            return False, "VLM: empty response"
+
+        status = getattr(response, "status_code", None)
+        if status is None and isinstance(response, dict):
+            status = response.get("status_code")
+        if status != 200:
+            err = getattr(response, "message", None) or (
+                response.get("message") if isinstance(response, dict) else None
+            )
+            return False, err or f"VLM HTTP status {status}"
+
+        response_text = _vlm_assistant_text_from_multimodal_response(response)
+        json_match = re.search(r"\{[\s\S]*\}", response_text, re.DOTALL)
+        if json_match:
+            result = json.loads(json_match.group(0))
+            return result.get("pass", False), result.get("reason", "No reason provided")
+
+        if "true" in response_text.lower():
+            return True, response_text
+        return False, response_text
+
+    except Exception as e:
+        print(f"  [VLM Verify Error] {e}")
+        return False, str(e)
+
+# ==============================================================================
+# 生成逻辑
+# ==============================================================================
+
+def create_edit_prompt(client: OpenAI, original_caption: str, detail_text: str) -> str:
+    """Generate edit prompt"""
+    prompt = f"""
+Original: {original_caption}
+Task: Change '{detail_text}' to something visually distinct.
+Output ONLY the instruction: "Target: {{detail}} -> Action: Change to {{new_desc}}"
+"""
     response = call_llm(client, prompt).strip()
+    # 清理
     instruction = re.sub(r'^["\']|["\']$', '', response)
     if "Target:" in instruction:
         return f"Generate a reasonable image. IMPORTANT: You must strictly maintain all other parts of the image unchanged except for executing: {instruction}"
     return f"Generate a reasonable image. IMPORTANT: You must strictly maintain all other parts of the image unchanged except for modifying: {detail_text}"
 
 def create_deletion_prompt(client: OpenAI, original_caption: str, detail_text: str) -> str:
-    """生成删除 prompt"""
+    """Generate deletion prompt"""
     return f"Generate a reasonable image. IMPORTANT: You must strictly maintain all other parts of the image unchanged except for executing the following deletion instructions:\nTarget: \"{detail_text}\" -> Action: Remove"
 
 def _call_dashscope_generation_once(api_key: str, image_url: str, prompt: str) -> str:
-    """单次 HTTP 调用图生接口（不含限流重试）。"""
+    """Single HTTP call to the image generation API (without rate limit retries)."""
     url = "https://dashscope.aliyuncs.com/api/v1/services/aigc/multimodal-generation/generation"
     headers = {"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"}
     payload = {
@@ -422,6 +479,7 @@ def _call_dashscope_generation_once(api_key: str, image_url: str, prompt: str) -
 
     raise Exception(f"Unexpected API response: {resp_json}")
 
+
 def call_dashscope_api(
     api_key: str,
     image_url: str,
@@ -429,11 +487,305 @@ def call_dashscope_api(
     rate_limit_retries: int = 10,
     rate_limit_base_wait: float = 8.0,
     min_api_interval_sec: float = 0.0,
-    wavespeed_api_keys: Optional[List[str]] = None,
 ) -> str:
-    """调用阿里云 DashScope API (Qwen-Image-Edit)；遇 Throttling.RateQuota 时退避重试。
+    """Call Aliyun DashScope API (Qwen-Image-Edit); backoff and retry on Throttling.RateQuota.
 
-    若配置了 WaveSpeed keys（环境变量 WAVESPEED_API_KEY / WAVESPEED_API_KEYS），在 DashScope
-    触发限流时会依次尝试 WaveSpeed Qwen-Image-Edit-Plus；WaveSpeed 返回 429 时轮换下一个 key。
+    Reference: https://help.aliyun.com/zh/model-studio/qwen-image-edit-api
+    """
+    last_exc: Optional[Exception] = None
+    for attempt in range(rate_limit_retries + 1):
+        try:
+            _pace_dashscope_calls(min_api_interval_sec)
+            return _call_dashscope_generation_once(api_key, image_url, prompt)
+        except Exception as e:
+            last_exc = e
+            msg = str(e)
+            if _is_dashscope_throttling(None, msg):
+                if attempt < rate_limit_retries:
+                    _sleep_rate_limit_backoff(attempt, rate_limit_base_wait)
+                    continue
+            raise
+    if last_exc:
+        raise last_exc
+    raise RuntimeError("call_dashscope_api: no attempt made")
 
-    参考文档: https://help.aliyun.com/zh/model-studio/qwen-image-edit-api
+def process_single_sample(args_tuple) -> Dict:
+    """Process the complete workflow for a single sample"""
+    item, images_dir, output_dir, api_key, edit_intensities, max_retries = args_tuple
+    
+    
+    try:
+        client = init_llm_client(api_key)
+        img_filename = item["img"]
+        img_path = os.path.join(images_dir, img_filename)
+        ref_caption = item.get("ref", "")
+        
+        if not os.path.exists(img_path):
+            return {"success": False, "error": f"Image not found: {img_path}"}
+        
+        if not ref_caption:
+            return {"success": False, "error": "No reference caption"}
+
+        if is_sample_fully_processed(output_dir, img_filename, edit_intensities):
+            print(f"  Skip {img_filename} — 输出目录已有全部强度的 edit_* / del_*，视为已处理。")
+            return {
+                "img": img_filename,
+                "success": True,
+                "skipped_already_complete": True,
+                "versions": [],
+            }
+
+        print(f"Processing {img_filename}...")
+        
+        # 1. 提取所有细节（不进行预筛选，保留全部作为候选池）
+        # 增加提取数量，以便有更多备选
+        raw_details = extract_modifiable_details_with_llm(client, ref_caption)
+        if not raw_details:
+             return {"success": False, "error": "No details extracted"}
+
+        # 按重要性排序（优先处理不重要的细节）
+        raw_details.sort(key=lambda x: x.get("importance", 5))
+        
+        result = {
+            "img": img_filename,
+            "success": True,
+            "versions": []
+        }
+        
+        base_name = os.path.splitext(img_filename)[0]
+        
+        # 维护当前状态
+        curr_edit_img_path = img_path
+        curr_edit_img_url = upload_image_to_url(img_path)
+        
+        curr_del_img_path = img_path
+        curr_del_img_url = upload_image_to_url(img_path)
+        
+        # 已使用的 details (用于约束检查)
+        used_details_texts = []
+        
+        # 标记哪些 details 已经被使用过（索引），避免重复
+        used_indices = set()
+        
+        max_steps = max(edit_intensities)
+        
+        # 逐步执行 (Step-by-step)
+        for step in range(1, max_steps + 1):
+            print(f"  [Step {step}] Finding suitable detail...")
+            
+            step_success = False
+            selected_detail = None
+            
+            # 遍历候选 details
+            for idx, detail in enumerate(raw_details):
+                if idx in used_indices:
+                    continue
+                    
+                candidate_text = detail['text']
+                
+                # 约束检查
+                if not check_progressive_constraint(client, candidate_text, used_details_texts):
+                    # print(f"    - Skip '{candidate_text}' (constraint violation)")
+                    continue
+                
+                print(f"    Trying candidate: '{candidate_text}'")
+                
+                # 尝试生成
+                version_entry = {
+                    "intensity": step,
+                    "modified_detail": candidate_text,
+                    "edit_success": False,
+                    "del_success": False
+                }
+                
+                # --- Edit Generation ---
+                retry_count = 0
+                while retry_count < max_retries:
+                    try:
+                        edit_prompt = create_edit_prompt(client, ref_caption, candidate_text)
+                        # print(f"      [Edit] Attempt {retry_count+1}")
+                        gen_url = call_dashscope_api(
+                            api_key, curr_edit_img_url, edit_prompt
+                        )
+                        
+                        temp_path = os.path.join(output_dir, f"temp_edit_{base_name}_{step}_{retry_count}.jpg")
+                        download_image(gen_url, temp_path)
+                        
+                        passed, reason = verify_edit_with_vlm(api_key, curr_edit_img_path, temp_path, edit_prompt)
+                        if passed:
+                            print(f"      [Edit Pass] {reason}")
+                            final_path = os.path.join(output_dir, f"{base_name}_edit_{step}.jpg")
+                            os.rename(temp_path, final_path)
+                            # 暂存结果，等 Del 也成功再更新状态
+                            version_entry["edit_output"] = final_path
+                            version_entry["edit_prompt"] = edit_prompt
+                            version_entry["edit_success"] = True
+                            break
+                        else:
+                            print(f"      [Edit Fail] {reason}")
+                            os.remove(temp_path)
+                            retry_count += 1
+                    except Exception as e:
+                        print(f"      [Edit Error] {e}")
+                        retry_count += 1
+                
+                # 如果 Edit 失败，就不需要尝试 Del 了，直接换下一个 detail
+                if not version_entry["edit_success"]:
+                    print(f"    Detail '{candidate_text}' failed edit verification. Trying next candidate...")
+                    continue
+
+                # --- Deletion Generation ---
+                retry_count = 0
+                while retry_count < max_retries:
+                    try:
+                        del_prompt = create_deletion_prompt(client, ref_caption, candidate_text)
+                        # print(f"      [Del] Attempt {retry_count+1}")
+                        gen_url = call_dashscope_api(
+                            api_key, curr_del_img_url, del_prompt
+                        )
+                        
+                        temp_path = os.path.join(output_dir, f"temp_del_{base_name}_{step}_{retry_count}.jpg")
+                        download_image(gen_url, temp_path)
+                        
+                        passed, reason = verify_edit_with_vlm(api_key, curr_del_img_path, temp_path, del_prompt)
+                        if passed:
+                            print(f"      [Del Pass] {reason}")
+                            final_path = os.path.join(output_dir, f"{base_name}_del_{step}.jpg")
+                            os.rename(temp_path, final_path)
+                            version_entry["del_output"] = final_path
+                            version_entry["del_prompt"] = del_prompt
+                            version_entry["del_success"] = True
+                            break
+                        else:
+                            print(f"      [Del Fail] {reason}")
+                            os.remove(temp_path)
+                            retry_count += 1
+                    except Exception as e:
+                        print(f"      [Del Error] {e}")
+                        retry_count += 1
+                
+                # 检查是否 Edit 和 Del 都成功
+                if version_entry["edit_success"] and version_entry["del_success"]:
+                    # 成功锁定该 detail
+                    step_success = True
+                    selected_detail = detail
+                    used_indices.add(idx)
+                    used_details_texts.append(candidate_text)
+                    
+                    # 更新当前图片状态
+                    curr_edit_img_path = version_entry["edit_output"]
+                    curr_edit_img_url = upload_image_to_url(curr_edit_img_path)
+                    
+                    curr_del_img_path = version_entry["del_output"]
+                    curr_del_img_url = upload_image_to_url(curr_del_img_path)
+                    
+                    # 记录结果
+                    if step in edit_intensities:
+                        result["versions"].append(version_entry)
+                    
+                    print(f"  [Step {step}] Success with detail: '{candidate_text}'")
+                    break # 跳出 detail 循环，进入下一个 step
+                else:
+                    print(f"    Detail '{candidate_text}' failed (Edit={version_entry['edit_success']}, Del={version_entry['del_success']}). Trying next...")
+            
+            # 如果遍历完所有 details 都没有成功
+            if not step_success:
+                print(f"  [Error] Step {step} failed. No suitable details found after trying all candidates. Skipping sample.")
+                result["success"] = False
+                result["error"] = f"Failed at step {step}: no valid details"
+                break # 停止 step 循环，放弃该样本
+        
+        return result
+
+    except Exception as e:
+        return {"success": False, "error": str(e), "img": item["img"]}
+
+def main():
+    parser = argparse.ArgumentParser(description="Generate edited images with VLM verification")
+    parser.add_argument("--subset_path", type=str, default="subset.json")
+    parser.add_argument("--images_dir", type=str, default="images")
+    parser.add_argument("--output_dir", type=str, default="edited_images")
+    parser.add_argument("--num_samples", type=int, default=20)
+    parser.add_argument("--edit_intensities", type=str, default="1,2,3,4")
+    parser.add_argument("--api_key", type=str, default=None)
+    parser.add_argument("--num_threads", type=int, default=1)
+    parser.add_argument("--max_retries", type=int, default=3, help="Verification failure retries")
+    
+    args = parser.parse_args()
+    
+    api_key = args.api_key or os.getenv("DASHSCOPE_API_KEY")
+    if not api_key:
+        print("Error: API Key required.")
+        return
+
+    os.makedirs(args.output_dir, exist_ok=True)
+    
+    # 加载数据
+    data = []
+    if os.path.exists(args.subset_path):
+        try:
+            full_data = load_subset_data(args.subset_path)
+            # 筛选出有图片的
+            for item in full_data:
+                if os.path.exists(os.path.join(args.images_dir, item["img"])):
+                    data.append(item)
+        except Exception as e:
+            print(f"Error loading subset: {e}")
+            
+    if not data:
+        print("Fallback to scanning directory...")
+        for f in os.listdir(args.images_dir):
+            if f.lower().endswith(('.jpg', '.jpeg', '.png')):
+                data.append({"img": f, "ref": f"A photo of {f}"}) # Placeholder caption
+
+    raw_row_count = len(data)
+    data, dedupe_dropped = dedupe_records_by_img(data)
+    if dedupe_dropped:
+        print(
+            f"候选 json 中含重复 img：原始 {raw_row_count} 行，去重后唯一图片 {len(data)} "
+            f"（合并丢弃 {dedupe_dropped} 行，避免计数与抽样按行翻倍）。"
+        )
+
+    intensities = [int(x) for x in args.edit_intensities.split(',')]
+    intensities.sort()
+
+    selected_samples, already_complete_count = select_random_incomplete_samples(
+        data, args.output_dir, intensities, args.num_samples
+    )
+    # num_samples 按唯一图片计数；已满强度输出的图片不占名额。
+    incomplete_pool = len(data) - already_complete_count
+    print(
+        f"唯一图片中已满强度(edit/del 1..{max(intensities)} 成对)：{already_complete_count}；"
+        f"待处理池：{incomplete_pool}；"
+        f"本轮抽样：{len(selected_samples)} / --num_samples {args.num_samples}。"
+    )
+    if len(selected_samples) < args.num_samples:
+        print(
+            f"[注意] 未完成样本不足，仅处理 {len(selected_samples)} 条（少于 --num_samples {args.num_samples}）。"
+        )
+    
+    # 多线程处理
+    tasks = []
+    for item in selected_samples:
+        tasks.append((item, args.images_dir, args.output_dir, api_key, intensities, args.max_retries))
+        
+    results = []
+    
+    if args.num_threads > 1:
+        with ThreadPoolExecutor(max_workers=args.num_threads) as executor:
+            future_to_item = {executor.submit(process_single_sample, task): task[0]["img"] for task in tasks}
+            for future in tqdm(as_completed(future_to_item), total=len(tasks)):
+                res = future.result()
+                results.append(res)
+    else:
+        for task in tqdm(tasks):
+            res = process_single_sample(task)
+            results.append(res)
+            
+    # 保存结果
+    with open(os.path.join(args.output_dir, "results.json"), "w") as f:
+        json.dump(results, f, indent=2, ensure_ascii=False)
+    print(f"Done. Results saved to {args.output_dir}/results.json")
+
+if __name__ == "__main__":
+    main()

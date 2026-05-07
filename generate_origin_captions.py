@@ -25,17 +25,17 @@ SYSTEM_PROMPT = (
 )
 
 def build_client_aliyun() -> OpenAI:
-    """构建 OpenAI 客户端（使用 Aliyun，用于 Qwen2）"""
+    """Build OpenAI client (using Aliyun for Qwen2)"""
     api_key = "YOUR_API_KEY_HERE"
     return OpenAI(api_key=api_key, base_url="https://api.bltcy.ai/v1")
 
 def encode_image_to_base64(image_path: Path) -> str:
-    """将图像编码为 base64"""
+    """Encode image to base64"""
     with image_path.open("rb") as f:
         return base64.b64encode(f.read()).decode("utf-8")
 
 def normalize_response_content(content: Any) -> str:
-    """规范化模型返回的内容"""
+    """Normalize the content returned by the model"""
     if isinstance(content, str):
         return content.strip()
     if isinstance(content, list):
@@ -56,7 +56,7 @@ def call_vlm(
     top_p: float = 0.9,
     max_tokens: int = 512,
 ) -> Optional[str]:
-    """调用 VLM API 生成 caption"""
+    """Call VLM API to generate caption"""
     messages = [
         {
             "role": "system",
@@ -104,7 +104,7 @@ def process_single_image(
     client: OpenAI,
     model_name: str,
 ) -> Dict[str, Any]:
-    """处理单个图像，使用指定模型生成 caption"""
+    """Process a single image and generate a caption using the specified model"""
     image_b64 = encode_image_to_base64(image_path)
     image_name = image_path.name
     
@@ -125,7 +125,7 @@ def process_single_image(
     return result
 
 def find_jpg_files(images_dir: Path) -> List[Path]:
-    """查找目录下的所有 jpg 文件"""
+    """Find all jpg files in the directory"""
     jpg_files = list(images_dir.glob("*.jpg"))
     jpg_files.extend(images_dir.glob("*.JPG"))
     return sorted(jpg_files)
@@ -305,7 +305,7 @@ def main():
         print(f"使用 {args.workers} 个线程处理...")
         
         def process_with_client(image_path: Path) -> tuple[str, Dict[str, Any]]:
-            """包装函数，用于多线程处理"""
+            """Wrapper function for multi-threading processing"""
             image_name = image_path.name
             try:
                 result = process_single_image(
